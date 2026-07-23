@@ -1,0 +1,130 @@
+---
+name: Prepare Liquorix update
+
+on:
+  schedule:
+    - cron: "47 5 * * 0"
+  workflow_dispatch:
+    inputs:
+      nixpkgs_branch:
+        description: Nixpkgs branch to update
+        required: true
+        default: master
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      NIXPKGS_BRANCH: ${{ inputs.nixpkgs_branch || 'master' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93  # v31
+      - name: Install validation tools
+        run: nix profile install nixpkgs#nixpkgs-review
+      - name: Check out the Nixpkgs fork
+        env:
+          NIXPKGS_PAT: ${{ secrets.NIXPKGS_PAT }}
+        run: |
+          git clone --branch "$NIXPKGS_BRANCH" \
+            "https://x-access-token:${NIXPKGS_PAT}@github.com/cheerfulScumbag/nixpkgs.git" \
+            nixpkgs
+          git -C nixpkgs remote add upstream https://github.com/NixOS/nixpkgs.git
+          git -C nixpkgs fetch upstream "$NIXPKGS_BRANCH"
+          git -C nixpkgs reset --hard "upstream/$NIXPKGS_BRANCH"
+      - name: Prepare update
+        id: prepare
+        run: |
+          ./scripts/maintain.py update --nixpkgs nixpkgs --output update.json
+          changed=$(python3 -c 'import json; print(str(json.load(open("update.json"))["changed"]).lower())')
+          new_line=$(python3 -c 'import json; print(str(json.load(open("update.json"))["release"]["newKernelLine"]).lower())')
+          version=$(python3 -c 'import json; d=json.load(open("update.json"))["release"]; print(d["newVersion"] + "-" + d["newSuffix"])')
+          {
+            echo "changed=$changed"
+            echo "new_line=$new_line"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - name: Format update
+        if: steps.prepare.outputs.changed == 'true'
+        run: |
+          cd nixpkgs
+          nix-shell -p nixfmt-rfc-style --run \
+            "nixfmt pkgs/os-specific/linux/kernel/liquorix-kernel.nix"
+      - name: Validate
+        if: steps.prepare.outputs.changed == 'true'
+        id: validate
+        continue-on-error: true
+        run: |
+          tier=point
+          if [[ "${{ steps.prepare.outputs.new_line }}" == true ]]; then
+            tier=new-line
+          fi
+          set -o pipefail
+          ./scripts/validate.sh nixpkgs "$tier" 2>&1 | tee validation.log
+      - name: Optional advisory AI triage
+        if: steps.prepare.outputs.changed == 'true' && steps.validate.outcome == 'failure'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-5.6-terra
+        run: |
+          if [[ -n "$OPENAI_API_KEY" ]]; then
+            ./scripts/triage.py validation.log > triage.md || true
+          else
+            printf '%s\n' 'AI triage was not configured.' > triage.md
+          fi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        if: always() && steps.prepare.outputs.changed == 'true'
+        with:
+          name: liquorix-${{ steps.prepare.outputs.version }}-validation
+          path: |
+            update.json
+            validation.log
+            triage.md
+          if-no-files-found: ignore
+      - name: Commit and push candidate
+        if: steps.prepare.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          branch="liquorix-$VERSION"
+          git -C nixpkgs switch -c "$branch"
+          git -C nixpkgs config user.name cheerfulScumbag
+          git -C nixpkgs config user.email 164391367+cheerfulScumbag@users.noreply.github.com
+          git -C nixpkgs add pkgs/os-specific/linux/kernel/liquorix-kernel.nix
+          git -C nixpkgs commit -m "linux_lqx: update to $VERSION"
+          git -C nixpkgs push --force-with-lease origin "$branch"
+      - name: Open draft upstream pull request
+        if: steps.prepare.outputs.changed == 'true' && steps.validate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.NIXPKGS_PAT }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          gh pr create \
+            --repo NixOS/nixpkgs \
+            --base "$NIXPKGS_BRANCH" \
+            --head "cheerfulScumbag:liquorix-$VERSION" \
+            --draft \
+            --title "linux_lqx: update to $VERSION" \
+            --body "Automated candidate prepared and validated by cheerfulScumbag/liquorix-nixpkgs-maintainer. Human review and approval are required."
+      - name: Report failed candidate
+        if: steps.prepare.outputs.changed == 'true' && steps.validate.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          printf '%s\n' \
+            "Validation failed. Candidate branch: https://github.com/cheerfulScumbag/nixpkgs/tree/liquorix-$VERSION" \
+            > issue-body.md
+          if [[ -f triage.md ]]; then
+            printf '\n' >> issue-body.md
+            cat triage.md >> issue-body.md
+          fi
+          gh issue create \
+            --title "Liquorix $VERSION needs maintainer review" \
+            --body-file issue-body.md
+          exit 1
