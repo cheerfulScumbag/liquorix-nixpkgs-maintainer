@@ -25,6 +25,14 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93  # v31
+      - name: Check required secret
+        env:
+          NIXPKGS_PAT: ${{ secrets.NIXPKGS_PAT }}
+        run: |
+          if [[ -z "$NIXPKGS_PAT" ]]; then
+            echo "::error::NIXPKGS_PAT is not configured; add a fine-grained token that can push to cheerfulScumbag/nixpkgs and open upstream pull requests."
+            exit 1
+          fi
       - name: Install validation tools
         run: nix profile install nixpkgs#nixpkgs-review
       - name: Check out the Nixpkgs fork
@@ -104,13 +112,26 @@ jobs:
           GH_TOKEN: ${{ secrets.NIXPKGS_PAT }}
           VERSION: ${{ steps.prepare.outputs.version }}
         run: |
-          gh pr create \
-            --repo NixOS/nixpkgs \
-            --base "$NIXPKGS_BRANCH" \
-            --head "cheerfulScumbag:liquorix-$VERSION" \
-            --draft \
-            --title "linux_lqx: update to $VERSION" \
-            --body "Automated candidate prepared and validated by cheerfulScumbag/liquorix-nixpkgs-maintainer. Human review and approval are required."
+          existing_pr=$(
+            gh pr list \
+              --repo NixOS/nixpkgs \
+              --base "$NIXPKGS_BRANCH" \
+              --head "cheerfulScumbag:liquorix-$VERSION" \
+              --state open \
+              --json url \
+              --jq '.[0].url // empty'
+          )
+          if [[ -n "$existing_pr" ]]; then
+            echo "An open candidate already exists: $existing_pr"
+          else
+            gh pr create \
+              --repo NixOS/nixpkgs \
+              --base "$NIXPKGS_BRANCH" \
+              --head "cheerfulScumbag:liquorix-$VERSION" \
+              --draft \
+              --title "linux_lqx: update to $VERSION" \
+              --body "Automated candidate prepared and validated by cheerfulScumbag/liquorix-nixpkgs-maintainer. Human review and approval are required."
+          fi
       - name: Report failed candidate
         if: steps.prepare.outputs.changed == 'true' && steps.validate.outcome == 'failure'
         env:
