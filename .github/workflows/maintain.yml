@@ -30,7 +30,7 @@ jobs:
           NIXPKGS_PAT: ${{ secrets.NIXPKGS_PAT }}
         run: |
           if [[ -z "$NIXPKGS_PAT" ]]; then
-            echo "::error::NIXPKGS_PAT is not configured; add a fine-grained token that can push to cheerfulScumbag/nixpkgs and open upstream pull requests."
+            echo "::error::NIXPKGS_PAT is not configured; see the README for the required token permissions."
             exit 1
           fi
       - name: Install validation tools
