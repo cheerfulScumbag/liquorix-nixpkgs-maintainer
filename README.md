@@ -13,6 +13,8 @@ for responding to build failures and upstream changes.
 
 - Target: Nixpkgs `master`, `x86_64-linux`.
 - Detection: daily.
+- Detection exits successfully while the package is absent from the target
+  branch, including before the restoration PR is merged.
 - Update batching: weekly, plus manual dispatch for urgent releases.
 - Point release: updater tests, formatting, evaluation, maintainer checks,
   config generation, kernel build, a NixOS boot/module smoke test, and the

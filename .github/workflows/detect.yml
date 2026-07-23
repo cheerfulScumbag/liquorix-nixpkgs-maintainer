@@ -21,6 +21,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git clone --depth=1 https://github.com/NixOS/nixpkgs.git nixpkgs
+          if [[ ! -f nixpkgs/pkgs/os-specific/linux/kernel/liquorix-kernel.nix ]]; then
+            echo "linux_lqx is not present on this Nixpkgs branch; nothing to detect."
+            exit 0
+          fi
           ./scripts/maintain.py check --nixpkgs nixpkgs --output update.json
           available=$(python3 -c 'import json; print(str(json.load(open("update.json"))["updateAvailable"]).lower())')
           if [[ "$available" != true ]]; then
