@@ -36,17 +36,26 @@ jobs:
       - name: Install validation tools
         run: nix profile install nixpkgs#nixpkgs-review
       - name: Check out the Nixpkgs fork
+        id: nixpkgs_checkout
         env:
           NIXPKGS_PAT: ${{ secrets.NIXPKGS_PAT }}
         run: |
-          git clone --branch "$NIXPKGS_BRANCH" \
+          git clone --depth 1 --single-branch --branch "$NIXPKGS_BRANCH" \
             "https://x-access-token:${NIXPKGS_PAT}@github.com/cheerfulScumbag/nixpkgs.git" \
             nixpkgs
           git -C nixpkgs remote add upstream https://github.com/NixOS/nixpkgs.git
-          git -C nixpkgs fetch upstream "$NIXPKGS_BRANCH"
+          git -C nixpkgs fetch --depth 1 upstream "$NIXPKGS_BRANCH"
           git -C nixpkgs reset --hard "upstream/$NIXPKGS_BRANCH"
+          package_path=pkgs/os-specific/linux/kernel/liquorix-kernel.nix
+          if [[ -f "nixpkgs/$package_path" ]]; then
+            echo "package_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "package_present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::linux_lqx is not present on $NIXPKGS_BRANCH yet; maintenance will begin after the restoration PR is merged."
+          fi
       - name: Prepare update
         id: prepare
+        if: steps.nixpkgs_checkout.outputs.package_present == 'true'
         run: |
           ./scripts/maintain.py update --nixpkgs nixpkgs --output update.json
           changed=$(python3 -c 'import json; print(str(json.load(open("update.json"))["changed"]).lower())')
@@ -100,7 +109,9 @@ jobs:
           VERSION: ${{ steps.prepare.outputs.version }}
         run: |
           branch="liquorix-$VERSION"
-          git -C nixpkgs switch -c "$branch"
+          git -C nixpkgs fetch --depth 1 origin \
+            "$branch:refs/remotes/origin/$branch" || true
+          git -C nixpkgs switch -C "$branch"
           git -C nixpkgs config user.name cheerfulScumbag
           git -C nixpkgs config user.email 164391367+cheerfulScumbag@users.noreply.github.com
           git -C nixpkgs add pkgs/os-specific/linux/kernel/liquorix-kernel.nix
